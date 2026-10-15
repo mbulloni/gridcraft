@@ -1,0 +1,58 @@
+# Team build (fork only): Windows MSI + portable zip and macOS DMG from the `team-build` branch
+# (GridCraft with Data › From Database). Unsigned: Windows SmartScreen and macOS Gatekeeper warn on
+# first launch. Every push to `team-build` runs it; the packages land in the run's artifacts.
+name: Team build
+
+on:
+  push:
+    branches: [team-build]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TEAM_VERSION: 0.7.0
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build (ODBC through the Windows driver manager)
+        run: cargo build --release --locked -p gridcraft -p gridcraft-cli --features gridcraft/odbc,gridcraft-cli/odbc
+      - name: MSI
+        shell: pwsh
+        run: |
+          dotnet tool install -g wix --version 5.0.2
+          New-Item -ItemType Directory -Force dist | Out-Null
+          wix build packaging/windows/gridcraft.wxs -arch x64 `
+            -d Version=$env:TEAM_VERSION -d BinDir=target/release `
+            -d IconPath=assets/app-icon/gridcraft.ico `
+            -o dist/gridcraft-$env:TEAM_VERSION-db-windows-x64.msi
+          Compress-Archive -Path target/release/gridcraft.exe, target/release/gridcraft-cli.exe `
+            -DestinationPath dist/gridcraft-$env:TEAM_VERSION-db-windows-x64-portable.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gridcraft-windows
+          path: dist/*
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      # No ODBC: it would link Homebrew's unixODBC, which the team's Macs don't have.
+      # PostgreSQL, MySQL/MariaDB and SQLite work without it.
+      - name: DMG (ad-hoc signed)
+        env:
+          GRIDCRAFT_VERSION: ${{ env.TEAM_VERSION }}-db
+          DIST: ${{ github.workspace }}/dist
+        run: packaging/macos/package.sh --arch aarch64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gridcraft-macos
+          path: dist/*
