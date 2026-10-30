@@ -1,0 +1,64 @@
+# Team build (fork only): Windows MSI + portable zip and macOS DMG from the `team-build` branch
+# (GridCraft with Data › From Database). Unsigned: Windows SmartScreen and macOS Gatekeeper warn on
+# first launch. Every push to `team-build` runs it; the packages land in the run's artifacts.
+name: Team build
+
+on:
+  push:
+    branches: [team-build]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TEAM_VERSION: 0.14.2
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      # Same build as packaging/windows/package.ps1 (static CRT, embedded icon), plus ODBC through
+      # the Windows driver manager; the script then only packages it.
+      - name: Build (ODBC)
+        shell: pwsh
+        run: |
+          $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS = '-C target-feature=+crt-static'
+          $env:GRIDCRAFT_REQUIRE_WINRES = '1'
+          cargo build --release --locked -p gridcraft -p gridcraft-cli --target x86_64-pc-windows-msvc --features gridcraft/odbc,gridcraft-cli/odbc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: MSI and portable zip
+        shell: pwsh
+        env:
+          GRIDCRAFT_VERSION: ${{ env.TEAM_VERSION }}-db
+          DIST: ${{ github.workspace }}/dist
+        run: |
+          dotnet tool install -g wix --version 5.0.2
+          pwsh packaging/windows/package.ps1 -Arch x64 -SkipBuild
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gridcraft-windows
+          path: dist/*
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      # No ODBC: it would link Homebrew's unixODBC, which the team's Macs don't have.
+      # PostgreSQL, MySQL/MariaDB and SQLite work without it.
+      - name: DMG (ad-hoc signed)
+        env:
+          GRIDCRAFT_VERSION: ${{ env.TEAM_VERSION }}-db
+          DIST: ${{ github.workspace }}/dist
+        run: packaging/macos/package.sh --arch aarch64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gridcraft-macos
+          path: dist/*
